@@ -43,3 +43,192 @@ JOIN
 ON df.tablespace_name = fs.tablespace_name
 GROUP BY df.tablespace_name
 ORDER BY pct_used DESC;
+
+3. Users, Roles, and Privileges
+sql
+-- List all database users
+SELECT username, account_status, created, default_tablespace, temporary_tablespace
+FROM dba_users
+ORDER BY username;
+
+-- System privileges granted to a user
+SELECT grantee, privilege, admin_option
+FROM dba_sys_privs
+WHERE grantee = UPPER('&USERNAME')
+ORDER BY privilege;
+
+-- Roles granted to a user
+SELECT grantee, granted_role, admin_option, default_role
+FROM dba_role_privs
+WHERE grantee = UPPER('&USERNAME')
+ORDER BY granted_role;
+4. Sessions, Locks, and Blocking
+sql
+-- Active sessions
+SELECT sid, serial#, username, status, osuser, machine, module, logon_time
+FROM v$session
+WHERE type = 'USER'
+ORDER BY logon_time;
+
+-- Sessions with current SQL
+SELECT s.sid,
+       s.serial#,
+       s.username,
+       s.machine,
+       s.program,
+       q.sql_id,
+       q.sql_text
+FROM v$session s
+JOIN v$sql q ON s.sql_id = q.sql_id
+WHERE s.type = 'USER'
+  AND s.username IS NOT NULL;
+sql
+-- Blocking vs waiting sessions
+SELECT
+  s1.sid       AS blocker_sid,
+  s1.serial#   AS blocker_serial,
+  s1.username  AS blocker_user,
+  s2.sid       AS waiter_sid,
+  s2.serial#   AS waiter_serial,
+  s2.username  AS waiter_user,
+  l1.type      AS lock_type
+FROM v$lock l1
+JOIN v$session s1 ON s1.sid = l1.sid
+JOIN v$lock l2 ON l1.id1 = l2.id1 AND l1.id2 = l2.id2 AND l1.block = 1 AND l2.request > 0
+JOIN v$session s2 ON s2.sid = l2.sid;
+5. Top SQL by Resource Usage
+sql
+-- Top SQL by elapsed time
+SELECT *
+FROM (
+  SELECT sql_id,
+         executions,
+         ROUND(elapsed_time / 1e6, 2) AS elapsed_sec,
+         ROUND(elapsed_time / DECODE(executions, 0, 1, executions) / 1e3, 2) AS avg_ms,
+         SUBSTR(sql_text, 1, 80) AS sql_text
+  FROM v$sql
+  WHERE executions > 0
+  ORDER BY elapsed_time DESC
+) WHERE ROWNUM <= 20;
+sql
+-- Top SQL by buffer gets (logical I/O)
+SELECT *
+FROM (
+  SELECT sql_id,
+         buffer_gets,
+         executions,
+         ROUND(buffer_gets / DECODE(executions, 0, 1, executions)) AS avg_gets,
+         SUBSTR(sql_text, 1, 80) AS sql_text
+  FROM v$sql
+  WHERE executions > 0
+  ORDER BY buffer_gets DESC
+) WHERE ROWNUM <= 20;
+6. Wait Events and Performance
+sql
+-- Current instance-wide wait class breakdown
+SELECT wait_class,
+       ROUND(SUM(time_waited) / 100, 2) AS time_waited_s
+FROM v$system_wait_class
+WHERE wait_class != 'Idle'
+GROUP BY wait_class
+ORDER BY time_waited_s DESC;
+sql
+-- Active session history (if licensed for ASH / Diagnostics)
+SELECT *
+FROM (
+  SELECT
+    sample_time,
+    session_id,
+    session_serial#,
+    user_id,
+    sql_id,
+    event,
+    session_state,
+    wait_class
+  FROM v$active_session_history
+  WHERE sample_time > SYSDATE - (1/24)  -- last hour
+  ORDER BY sample_time DESC
+) WHERE ROWNUM <= 100;
+7. Backup and RMAN Info (Database Views Side)
+sql
+-- Recent backups (RMAN)
+SELECT
+  bs.start_time,
+  bs.completion_time,
+  bs.backup_type,
+  bs.incremental_level,
+  bs.status,
+  ROUND(bs.output_bytes / 1024 / 1024) AS size_mb
+FROM v$backup_set bs
+ORDER BY bs.completion_time DESC;
+sql
+-- Archivelog generation by day
+SELECT
+  TRUNC(first_time) AS day,
+  COUNT(*)          AS logs,
+  ROUND(SUM(blocks * block_size) / 1024 / 1024) AS mb
+FROM v$archived_log
+GROUP BY TRUNC(first_time)
+ORDER BY day DESC;
+8. Invalid Objects and Compile
+sql
+-- Invalid objects
+SELECT owner, object_name, object_type, status
+FROM dba_objects
+WHERE status = 'INVALID'
+ORDER BY owner, object_type, object_name;
+sql
+-- Recompile all invalid objects in a schema
+BEGIN
+  FOR r IN (
+    SELECT owner, object_name, object_type
+    FROM dba_objects
+    WHERE status = 'INVALID'
+      AND owner = UPPER('&SCHEMA')
+  ) LOOP
+    BEGIN
+      EXECUTE IMMEDIATE 'ALTER ' || r.object_type || ' "' || r.owner || '"."' || r.object_name || '" COMPILE';
+    EXCEPTION
+      WHEN OTHERS THEN
+        NULL;
+    END;
+  END LOOP;
+END;
+/
+9. Growth and Space Trends
+sql
+-- Object size per schema (top 20)
+SELECT *
+FROM (
+  SELECT owner,
+         ROUND(SUM(bytes) / 1024 / 1024 / 1024, 2) AS size_gb
+  FROM dba_segments
+  GROUP BY owner
+  ORDER BY size_gb DESC
+) WHERE ROWNUM <= 20;
+sql
+-- Largest tables in a schema
+SELECT *
+FROM (
+  SELECT owner,
+         segment_name AS table_name,
+         ROUND(SUM(bytes) / 1024 / 1024, 2) AS size_mb
+  FROM dba_segments
+  WHERE segment_type = 'TABLE'
+    AND owner = UPPER('&SCHEMA')
+  GROUP BY owner, segment_name
+  ORDER BY size_mb DESC
+) WHERE ROWNUM <= 20;
+
+10. Data Dictionary Quick Help
+sql
+-- List all dictionary views
+SELECT table_name, comments
+FROM dictionary
+ORDER BY table_name;
+
+-- Find views related to a keyword (e.g., 'SEGMENT')
+SELECT table_name, comments
+FROM dictionary
+WHERE UPPER(comments) LIKE UPPER('%&KEYWORD%')
+ORDER BY table_name;
