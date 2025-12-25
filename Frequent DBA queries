@@ -1,0 +1,45 @@
+1. Database and Instance info.
+
+-- Database name, ID, created date
+SELECT name, dbid, created, log_mode
+FROM v$database;
+
+-- Instance status
+SELECT instance_name, host_name, version, status, startup_time
+FROM v$instance;
+
+-- All components status (should be VALID)
+SELECT comp_name, status, version
+FROM dba_registry
+ORDER BY comp_name;
+
+2. Datafiles and Tablespaces
+-- Tablespace usage (high level)
+SELECT
+  df.tablespace_name,
+  ROUND(SUM(df.bytes) / 1024 / 1024) AS total_mb,
+  ROUND(SUM(df.bytes - fs.bytes_free) / 1024 / 1024) AS used_mb,
+  ROUND(SUM(fs.bytes_free) / 1024 / 1024) AS free_mb,
+  ROUND( (SUM(df.bytes - fs.bytes_free) / SUM(df.bytes)) * 100, 2 ) AS pct_used
+FROM
+  (SELECT tablespace_name, SUM(bytes) bytes FROM dba_data_files GROUP BY tablespace_name) df
+JOIN
+  (SELECT tablespace_name, SUM(bytes) bytes_free FROM dba_free_space GROUP BY tablespace_name) fs
+ON df.tablespace_name = fs.tablespace_name
+GROUP BY df.tablespace_name
+ORDER BY pct_used DESC;
+
+-- Tablespace usage (high level)
+SELECT
+  df.tablespace_name,
+  ROUND(SUM(df.bytes) / 1024 / 1024) AS total_mb,
+  ROUND(SUM(df.bytes - fs.bytes_free) / 1024 / 1024) AS used_mb,
+  ROUND(SUM(fs.bytes_free) / 1024 / 1024) AS free_mb,
+  ROUND( (SUM(df.bytes - fs.bytes_free) / SUM(df.bytes)) * 100, 2 ) AS pct_used
+FROM
+  (SELECT tablespace_name, SUM(bytes) bytes FROM dba_data_files GROUP BY tablespace_name) df
+JOIN
+  (SELECT tablespace_name, SUM(bytes) bytes_free FROM dba_free_space GROUP BY tablespace_name) fs
+ON df.tablespace_name = fs.tablespace_name
+GROUP BY df.tablespace_name
+ORDER BY pct_used DESC;
